@@ -15,15 +15,15 @@ describe('Speech Service (lib/speech.ts)', () => {
     const statusMr = getVoiceStatus('mr');
     expect(statusMr).toBeDefined();
     expect(statusMr.lang).toBe('mr');
-    // When no speech synthesis is available in node environment, returns available: false
-    expect(statusMr.available).toBe(false);
-    expect(statusMr.message).toBeDefined();
-    expect(statusMr.message).toContain('Marathi');
+    // When no browser voice is available, cloud fallback engine is ready
+    expect(statusMr.available).toBe(true);
+    expect(statusMr.engine).toBe('cloud');
+    expect(statusMr.voiceName).toContain('Marathi');
 
     const statusHi = getVoiceStatus('hi');
     expect(statusHi.lang).toBe('hi');
-    expect(statusHi.available).toBe(false);
-    expect(statusHi.message).toContain('Hindi');
+    expect(statusHi.available).toBe(true);
+    expect(statusHi.engine).toBe('cloud');
   });
 
   it('identifies lack of browser speech synthesis in Node environment gracefully', () => {

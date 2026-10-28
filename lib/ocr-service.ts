@@ -5,9 +5,29 @@
 // ============================================================
 
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { PDFParse } from 'pdf-parse';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createWorker } from 'tesseract.js';
+
+// Configure pdfjs worker using file:// URL for reliable Next.js Windows server execution
+try {
+  const workerDiskPath = path.join(
+    process.cwd(),
+    'node_modules',
+    'pdfjs-dist',
+    'legacy',
+    'build',
+    'pdf.worker.mjs'
+  );
+  const workerFileUrl = pathToFileURL(workerDiskPath).href;
+
+  if (typeof (PDFParse as unknown as { setWorker?: (src: string) => void }).setWorker === 'function') {
+    (PDFParse as unknown as { setWorker: (src: string) => void }).setWorker(workerFileUrl);
+  }
+} catch (workerSrcErr) {
+  console.warn('[ocr-service] Could not set pdfjs workerSrc:', workerSrcErr);
+}
 
 export interface ExtractionResult {
   text: string;
@@ -152,10 +172,20 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<ExtractionResu
         }
       }
 
+      const workerPath = path.join(
+        process.cwd(),
+        'node_modules',
+        'tesseract.js',
+        'src',
+        'worker-script',
+        'node',
+        'index.js'
+      );
       const tessdataPath = path.join(process.cwd(), 'tessdata');
 
       // Initialize Tesseract worker for English, Hindi, and Marathi offline
       const worker = await createWorker('eng+hin+mar', 1, {
+        workerPath,
         cachePath: tessdataPath,
         gzip: false,
       });
@@ -163,9 +193,12 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<ExtractionResu
       try {
         const ocrPages: string[] = [];
 
-        if (renderedPages.length > 0) {
+        // Limit OCR processing to maximum 10 pages for responsive performance
+        const pagesToProcess = renderedPages.slice(0, 10);
+
+        if (pagesToProcess.length > 0) {
           // Process rendered/extracted page images in strict page order
-          for (const page of renderedPages) {
+          for (const page of pagesToProcess) {
             const imgBuffer = Buffer.from(page.data);
             const ret = await worker.recognize(imgBuffer);
             const pageText = ret.data.text.trim();

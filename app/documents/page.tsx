@@ -187,14 +187,21 @@ export default function DocumentsPage() {
         return;
       }
 
-      setPipelineStage('idle');
       const text = data.text || '';
       setActiveText(text);
       setActiveFileName(data.fileName || file.name);
       setActiveFileSize(data.fileSize || file.size);
       setActivePageCount(data.pageCount || 1);
       setActiveWordCount(data.wordCount || 0);
-      setIsReviewing(true);
+
+      // Automatically continue to lesson generation after successful extraction
+      await processDocument(
+        text,
+        data.fileName || file.name,
+        data.fileSize || file.size,
+        data.pageCount || 1,
+        data.wordCount || 0
+      );
     } catch {
       setUploadError('Could not upload or extract PDF. Please check your network and try again.');
       setPipelineStage('idle');

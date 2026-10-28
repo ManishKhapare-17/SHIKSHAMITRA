@@ -62,6 +62,7 @@ export interface VoiceStatus {
   lang: Language;
   locale: string;
   message?: string;
+  engine?: 'browser' | 'cloud';
 }
 
 export function getVoiceStatus(lang: Language): VoiceStatus {
@@ -72,14 +73,17 @@ export function getVoiceStatus(lang: Language): VoiceStatus {
       voiceName: voices[0].name,
       lang,
       locale: voices[0].lang,
+      engine: 'browser',
     };
   }
-  const langName = lang === 'hi' ? 'Hindi' : lang === 'mr' ? 'Marathi' : 'English';
+
+  // Cloud speech engine fallback for Marathi and other languages lacking browser voice data
   return {
-    available: false,
+    available: true,
+    voiceName: lang === 'mr' ? 'Marathi Cloud Speech Engine (Google)' : 'Cloud Speech Engine',
     lang,
-    locale: LOCALE_MAP[lang]?.[0] || 'en-IN',
-    message: `A native ${langName} voice is not installed on your browser/device. Spoken narration cannot play, but complete ${langName} text and captions are displayed so you can read along. To enable audio, install the ${langName} speech package in your OS settings or use Google Chrome.`,
+    locale: LOCALE_MAP[lang]?.[0] || 'mr-IN',
+    engine: 'cloud',
   };
 }
 
@@ -115,9 +119,14 @@ export interface SpeakOptions {
 
 let lastCharIndex = 0;
 let activeUtterance: SpeechSynthesisUtterance | null = null;
+let currentAudioElement: HTMLAudioElement | null = null;
 
 export function getActiveUtterance(): SpeechSynthesisUtterance | null {
   return activeUtterance;
+}
+
+export function getCurrentAudioElement(): HTMLAudioElement | null {
+  return currentAudioElement;
 }
 
 export function getLastSpokenCharIndex(): number {
@@ -137,13 +146,8 @@ export function speakText({
   onBoundary,
   onError,
 }: SpeakOptions): boolean {
-  if (!isSpeechSynthesisSupported()) {
-    onError?.('Speech synthesis is not supported on this device/browser.');
-    return false;
-  }
-
-  // Cancel any ongoing speech
-  window.speechSynthesis.cancel();
+  // Cancel any ongoing browser speech and stop any playing audio element
+  stopSpeaking();
 
   // Strip Markdown markers so narration sounds natural
   const fullCleanText = text
@@ -152,7 +156,7 @@ export function speakText({
     .replace(/#{1,6}\s+/g, '')
     .replace(/\[(.*?)\]\(.*?\)/g, '$1')
     .replace(/[•\-\*]\s+/g, '')
-    .replace(/🍕|🌊|☁️|🌧️|🌅|🏫|📚|🔬|🔢|📖|⚡|🌱|🔥|⭐|🎉|✅|❌|💡/gu, '')
+    .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}]/gu, '')
     .trim();
 
   if (!fullCleanText) return false;
@@ -164,66 +168,127 @@ export function speakText({
 
   lastCharIndex = startIndex;
 
-  const utterance = new SpeechSynthesisUtterance(textToSpeak);
-  // Support speeds from 0.5x to 2.0x
-  utterance.rate = Math.min(2.0, Math.max(0.5, rate));
-  utterance.pitch = persona === 'female' ? 1.05 : 0.95;
-
+  // 1. Check if browser has a compatible native voice
   const matchingVoices = getAvailableVoices(lang);
-  if (matchingVoices.length > 0) {
+
+  // If a native voice is available in the browser, use browser SpeechSynthesis
+  if (matchingVoices.length > 0 && isSpeechSynthesisSupported()) {
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    utterance.rate = Math.min(2.0, Math.max(0.5, rate));
+    utterance.pitch = persona === 'female' ? 1.05 : 0.95;
+
     const genderMatcher = persona === 'female' ? /(female|girl|woman|zira|aditi|veena|lekha|swara|kalpana)/i : /(male|boy|man|david|rishi|ravi|hemant)/i;
     const bestVoice = matchingVoices.find((v) => genderMatcher.test(v.name)) || matchingVoices[0];
     utterance.voice = bestVoice;
     utterance.lang = bestVoice.lang;
-  } else {
-    // If language is Hindi or Marathi and no native voice is installed, do not speak with English fallback
-    if (lang !== 'en') {
-      const langName = lang === 'hi' ? 'Hindi' : 'Marathi';
-      onError?.(
-        `A native ${langName} voice was not found on your browser/device. Please read along with the Devanagari text and captions below, or install the ${langName} speech package in your OS settings.`
-      );
-      return false;
-    }
-    utterance.lang = LOCALE_MAP[lang][0];
+
+    utterance.onstart = () => onStart?.();
+    utterance.onend = () => {
+      lastCharIndex = fullCleanText.length;
+      activeUtterance = null;
+      onEnd?.();
+    };
+    utterance.onpause = () => onPause?.();
+    utterance.onresume = () => onResume?.();
+
+    utterance.onboundary = (e) => {
+      if (typeof e.charIndex === 'number') {
+        const overallIndex = startIndex + e.charIndex;
+        lastCharIndex = overallIndex;
+        onBoundary?.(overallIndex);
+      }
+    };
+
+    utterance.onerror = (e) => {
+      activeUtterance = null;
+      if (e.error !== 'canceled' && e.error !== 'interrupted') {
+        onError?.(e.error || 'Voice narration error');
+      }
+      onEnd?.();
+    };
+
+    activeUtterance = utterance;
+    window.speechSynthesis.speak(utterance);
+    return true;
   }
 
-  utterance.onstart = () => onStart?.();
-  utterance.onend = () => {
-    lastCharIndex = fullCleanText.length;
-    activeUtterance = null;
-    onEnd?.();
-  };
-  utterance.onpause = () => onPause?.();
-  utterance.onresume = () => onResume?.();
+  // 2. Cloud TTS Fallback (Verified Marathi, Hindi, or English Audio Stream)
+  if (typeof window !== 'undefined') {
+    try {
+      const audioUrl = `/api/tts?lang=${encodeURIComponent(lang)}&text=${encodeURIComponent(textToSpeak)}`;
+      const audio = new Audio(audioUrl);
+      audio.playbackRate = Math.min(2.0, Math.max(0.5, rate));
 
-  utterance.onboundary = (e) => {
-    if (typeof e.charIndex === 'number') {
-      const overallIndex = startIndex + e.charIndex;
-      lastCharIndex = overallIndex;
-      onBoundary?.(overallIndex);
+      audio.onplay = () => {
+        onStart?.();
+      };
+
+      audio.onended = () => {
+        lastCharIndex = fullCleanText.length;
+        currentAudioElement = null;
+        onEnd?.();
+      };
+
+      audio.onpause = () => {
+        if (!audio.ended) {
+          onPause?.();
+        }
+      };
+
+      audio.onerror = () => {
+        currentAudioElement = null;
+        onError?.(
+          lang === 'mr'
+            ? 'मराठी ऑडिओ उपलब्ध होऊ शकला नाही. कृपया नेटवर्क कनेक्शन तपासा.'
+            : 'Audio narration could not be loaded. Please check your network connection.'
+        );
+        onEnd?.();
+      };
+
+      // Approximate boundary tracking during cloud audio playback for synchronized captions
+      audio.ontimeupdate = () => {
+        if (audio.duration && audio.duration > 0) {
+          const ratio = Math.min(1, Math.max(0, audio.currentTime / audio.duration));
+          const approxChar = startIndex + Math.floor(ratio * textToSpeak.length);
+          lastCharIndex = approxChar;
+          onBoundary?.(approxChar);
+        }
+      };
+
+      currentAudioElement = audio;
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((playErr) => {
+          console.warn('[speech] Cloud audio playback was interrupted or blocked:', playErr);
+          currentAudioElement = null;
+          onError?.('Click play to allow audio narration.');
+        });
+      }
+      return true;
+    } catch (audioErr) {
+      console.error('[speech] Cloud TTS initialization error:', audioErr);
+      onError?.('Could not initiate Marathi audio narration.');
+      return false;
     }
-  };
+  }
 
-  utterance.onerror = (e) => {
-    activeUtterance = null;
-    if (e.error !== 'canceled' && e.error !== 'interrupted') {
-      onError?.(e.error || 'Voice narration error');
-    }
-    onEnd?.();
-  };
-
-  activeUtterance = utterance;
-  window.speechSynthesis.speak(utterance);
-  return true;
+  onError?.('Audio narration is not supported in this environment.');
+  return false;
 }
 
 export function pauseSpeaking(): void {
+  if (currentAudioElement && !currentAudioElement.paused) {
+    currentAudioElement.pause();
+  }
   if (isSpeechSynthesisSupported() && window.speechSynthesis.speaking) {
     window.speechSynthesis.pause();
   }
 }
 
 export function resumeSpeaking(): void {
+  if (currentAudioElement && currentAudioElement.paused) {
+    currentAudioElement.play().catch(() => {});
+  }
   if (isSpeechSynthesisSupported() && window.speechSynthesis.paused) {
     window.speechSynthesis.resume();
   }
@@ -231,6 +296,11 @@ export function resumeSpeaking(): void {
 
 export function stopSpeaking(): void {
   activeUtterance = null;
+  if (currentAudioElement) {
+    currentAudioElement.pause();
+    currentAudioElement.currentTime = 0;
+    currentAudioElement = null;
+  }
   if (isSpeechSynthesisSupported()) {
     window.speechSynthesis.cancel();
   }
