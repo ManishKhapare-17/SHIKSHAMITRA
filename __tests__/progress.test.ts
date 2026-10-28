@@ -26,8 +26,21 @@ import {
   resetProgress,
   saveStudentName,
   getStudentName,
+  savePreferredLanguage,
+  getPreferredLanguage,
+  saveTeacherPersona,
+  getTeacherPersona,
+  saveSpeechRate,
+  getSpeechRate,
+  saveLessonCheckpoint,
+  getLessonCheckpoint,
+  clearLessonCheckpoint,
+  saveDocumentLearning,
+  getDocuments,
+  getDocumentById,
+  deleteDocument,
 } from '@/lib/progress';
-import type { QuizAttempt } from '@/lib/types';
+import type { QuizAttempt, DocumentLearningData } from '@/lib/types';
 
 function makeAttempt(overrides?: Partial<QuizAttempt>): QuizAttempt {
   return {
@@ -207,5 +220,70 @@ describe('resetProgress', () => {
     const p = loadProgress();
     expect(p.lessonProgress).toEqual([]);
     expect(p.quizAttempts).toEqual([]);
+  });
+});
+
+// ── Preferences & Multilingual ────────────────────────────────
+
+describe('Preferences & Document Storage', () => {
+  it('saves and retrieves preferred language', () => {
+    savePreferredLanguage('hi');
+    expect(getPreferredLanguage()).toBe('hi');
+    savePreferredLanguage('mr');
+    expect(getPreferredLanguage()).toBe('mr');
+  });
+
+  it('saves and retrieves teacher persona', () => {
+    saveTeacherPersona('male');
+    expect(getTeacherPersona()).toBe('male');
+    saveTeacherPersona('female');
+    expect(getTeacherPersona()).toBe('female');
+  });
+
+  it('saves and clamps speech rate correctly', () => {
+    saveSpeechRate(1.25);
+    expect(getSpeechRate()).toBe(1.25);
+    saveSpeechRate(5.0); // should clamp to 2.0
+    expect(getSpeechRate()).toBe(2.0);
+    saveSpeechRate(0.1); // should clamp to 0.5
+    expect(getSpeechRate()).toBe(0.5);
+  });
+
+  it('saves, retrieves, and clears lesson checkpoints', () => {
+    saveLessonCheckpoint({
+      lessonId: 'math-fractions-g4',
+      stepIndex: 2,
+      charIndex: 45,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const cp = getLessonCheckpoint('math-fractions-g4');
+    expect(cp).toBeDefined();
+    expect(cp?.stepIndex).toBe(2);
+    expect(cp?.charIndex).toBe(45);
+
+    clearLessonCheckpoint('math-fractions-g4');
+    expect(getLessonCheckpoint('math-fractions-g4')).toBeUndefined();
+  });
+
+  it('saves, retrieves and deletes uploaded PDF document learning data', () => {
+    const doc: DocumentLearningData = {
+      id: 'doc-test-1',
+      fileName: 'ScienceNotes.pdf',
+      fileSize: 1024,
+      uploadedAt: new Date().toISOString(),
+      extractedText: 'Water cycle is evaporation and condensation.',
+      pageCount: 1,
+      wordCount: 7,
+      explanation: 'Simple water explanation',
+    };
+
+    saveDocumentLearning(doc);
+    expect(getDocuments()).toHaveLength(1);
+    expect(getDocumentById('doc-test-1')?.fileName).toBe('ScienceNotes.pdf');
+
+    deleteDocument('doc-test-1');
+    expect(getDocuments()).toHaveLength(0);
+    expect(getDocumentById('doc-test-1')).toBeUndefined();
   });
 });

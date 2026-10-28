@@ -125,6 +125,30 @@ describe('POST /api/tutor — input validation', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 400 for invalid language code', async () => {
+    const req = makeRequest({
+      messages: [{ role: 'user', content: 'Help me' }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      language: 'invalid-lang' as any,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for overly long documentContent in context', async () => {
+    const req = makeRequest({
+      messages: [{ role: 'user', content: 'Help me' }],
+      lessonContext: {
+        lessonId: 'doc-1',
+        lessonTitle: 'Notes',
+        subjectName: 'Science',
+        documentContent: 'x'.repeat(25000),
+      },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
+
   // Valid request with fake key — will hit Gemini and fail (502), but validation passes
   it('passes validation for well-formed request (hits API which will fail with fake key)', async () => {
     const req = makeRequest({
@@ -132,6 +156,23 @@ describe('POST /api/tutor — input validation', () => {
     });
     const res = await POST(req);
     // Should not be 400 (validation error) — will be 502 from Gemini failing
+    expect(res.status).not.toBe(400);
+    expect([502, 200]).toContain(res.status);
+  });
+
+  it('passes validation for well-formed in-lesson request with relevant content', async () => {
+    const req = makeRequest({
+      messages: [{ role: 'user', content: 'What does numerator mean?' }],
+      lessonContext: {
+        lessonId: 'math-fractions-g4',
+        lessonTitle: 'Fractions',
+        subjectName: 'Mathematics',
+        currentStepTitle: 'Understanding Parts',
+        currentStepNarration: 'A fraction represents equal parts of a whole.',
+        relevantContent: 'Numerator is the top number.',
+      },
+    });
+    const res = await POST(req);
     expect(res.status).not.toBe(400);
     expect([502, 200]).toContain(res.status);
   });

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import ServiceWorkerRegistration from '@/components/ServiceWorkerRegistration';
+import { LanguageProvider } from '@/lib/LanguageContext';
 
 export const metadata: Metadata = {
   title: 'ShikshaMitra AI — Your Learning Companion',
@@ -30,10 +31,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" data-scroll-behavior="smooth">
       <body className="bg-slate-50 text-slate-800 antialiased min-h-screen">
         <ServiceWorkerRegistration />
-        {children}
+        <LanguageProvider>
+          {children}
+        </LanguageProvider>
       </body>
     </html>
   );

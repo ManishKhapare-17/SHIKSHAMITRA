@@ -8,11 +8,14 @@ import {
 } from '@/lib/progress';
 import { LESSONS } from '@/lib/lessons';
 import { SUBJECTS } from '@/lib/subjects';
+import { useLanguage } from '@/lib/LanguageContext';
+import { t } from '@/lib/i18n';
 import type { PersistedProgress, TopicPerformance, Recommendation } from '@/lib/types';
 import { CheckCircle, BookOpen, BarChart2, Flame, Target, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
 
 export default function ProgressPage() {
+  const { language: lang } = useLanguage();
   const [progress, setProgress] = useState<PersistedProgress | null>(null);
   const [topicPerf, setTopicPerf] = useState<TopicPerformance[]>([]);
   const [weekActivity, setWeekActivity] = useState<ReturnType<typeof getActivityLast7Days>>([]);
@@ -20,11 +23,16 @@ export default function ProgressPage() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      const p = loadProgress();
-      setProgress(p);
-      setTopicPerf(getTopicPerformance());
-      setWeekActivity(getActivityLast7Days());
-      setRecommendations(getRecommendations());
+      try {
+        const p = loadProgress();
+        setProgress(p);
+        setTopicPerf(getTopicPerformance());
+        setWeekActivity(getActivityLast7Days());
+        setRecommendations(getRecommendations());
+      } catch (err) {
+        console.error('Failed to load progress data:', err);
+        setProgress(loadProgress());
+      }
     }, 0);
     return () => clearTimeout(timer);
   }, []);
@@ -100,14 +108,15 @@ export default function ProgressPage() {
               const subjectTotal = subjectAttempts.reduce((s, a) => s + a.totalQuestions, 0);
               const subjectAccuracy = subjectTotal > 0 ? Math.round((subjectCorrect / subjectTotal) * 100) : null;
 
+              const subjName = subject.nameTranslations?.[lang] || subject.name;
               return (
                 <Card key={subject.id} className="p-4">
                   <div className="flex items-center gap-3 mb-3">
                     <span className="text-2xl">{subject.emoji}</span>
                     <div className="flex-1">
                       <div className="flex justify-between">
-                        <span className="font-bold text-slate-800 text-sm">{subject.name}</span>
-                        <span className="text-sm font-semibold text-slate-600">{done}/{subjectLessons.length} lessons</span>
+                        <span className="font-bold text-slate-800 text-sm">{subjName}</span>
+                        <span className="text-sm font-semibold text-slate-600">{done}/{subjectLessons.length} {t('lessonsUnit', lang)}</span>
                       </div>
                       <ProgressBar
                         value={pct}
@@ -135,11 +144,13 @@ export default function ProgressPage() {
             <div className="space-y-2">
               {topicPerf.map((tp) => {
                 const subject = SUBJECTS.find((s) => s.id === tp.subjectId);
+                const targetLesson = LESSONS.find((l) => l.id === tp.lessonId);
+                const lessonTitle = targetLesson?.titleTranslations?.[lang] || tp.lessonTitle;
                 return (
                   <Card key={tp.lessonId} className="p-4 flex items-center gap-4">
                     <span className="text-xl">{subject?.emoji}</span>
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm text-slate-800 truncate">{tp.lessonTitle}</p>
+                      <p className="font-semibold text-sm text-slate-800 truncate">{lessonTitle}</p>
                       <div className="flex items-center gap-3 mt-1">
                         <ProgressBar value={tp.bestScore} color={tp.bestScore >= 70 ? 'bg-green-500' : tp.bestScore >= 50 ? 'bg-amber-500' : 'bg-red-500'} className="w-24" />
                         <span className="text-xs text-slate-500">Best: {tp.bestScore}%</span>

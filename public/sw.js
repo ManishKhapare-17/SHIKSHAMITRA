@@ -51,8 +51,13 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // NEVER cache API routes (especially /api/tutor)
-  if (url.pathname.startsWith('/api/')) {
+  // NEVER cache API routes or Next.js internal/HMR assets
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/_next/') ||
+    url.pathname.includes('webpack-hmr') ||
+    url.pathname.includes('turbopack')
+  ) {
     event.respondWith(fetch(event.request));
     return;
   }

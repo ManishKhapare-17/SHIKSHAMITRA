@@ -5,15 +5,20 @@
 import type {
   PersistedProgress,
   LessonProgress,
+  LessonCheckpoint,
   QuizAttempt,
   StudentActivity,
   TopicPerformance,
   Recommendation,
+  Language,
+  TeacherPersona,
+  DocumentLearningData,
 } from './types';
 import { STORAGE_SCHEMA_VERSION } from './types';
 import { LESSON_MAP, LESSONS } from './lessons';
 
-const STORAGE_KEY = 'shikshamitra_progress_v2';
+const STORAGE_KEY = 'shikshamitra_progress_v3';
+const LEGACY_KEYS = ['shikshamitra_progress_v2', 'shikshamitra_progress_v1'];
 const TODAY = (): string => new Date().toISOString().slice(0, 10);
 
 // ──── Safe localStorage access ───────────────────────────────
@@ -33,7 +38,16 @@ function loadRaw(): unknown {
   if (!storageAvailable()) return null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
+
+    // Try migration from legacy keys
+    for (const legacyKey of LEGACY_KEYS) {
+      const legacyRaw = localStorage.getItem(legacyKey);
+      if (legacyRaw) {
+        return JSON.parse(legacyRaw);
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -59,6 +73,11 @@ export function loadProgress(): PersistedProgress {
       ...defaultProgress(),
       ...raw,
       schemaVersion: STORAGE_SCHEMA_VERSION,
+      preferredLanguage: (raw.preferredLanguage as Language) || 'en',
+      teacherPersona: (raw.teacherPersona as TeacherPersona) || 'female',
+      speechRate: typeof raw.speechRate === 'number' ? raw.speechRate : 1,
+      documents: Array.isArray(raw.documents) ? raw.documents : [],
+      checkpoints: raw.checkpoints && typeof raw.checkpoints === 'object' ? raw.checkpoints : {},
     };
   }
   return defaultProgress();
@@ -69,8 +88,13 @@ function defaultProgress(): PersistedProgress {
     schemaVersion: STORAGE_SCHEMA_VERSION,
     studentName: 'Student',
     gradeLevel: 4,
+    preferredLanguage: 'en',
+    teacherPersona: 'female',
+    speechRate: 1,
     lessonProgress: [],
     quizAttempts: [],
+    documents: [],
+    checkpoints: {},
     streakDays: 0,
     lastActiveDate: '',
     createdAt: new Date().toISOString(),
@@ -99,26 +123,58 @@ function updateStreak(progress: PersistedProgress): PersistedProgress {
   return { ...progress, streakDays: newStreak, lastActiveDate: today };
 }
 
+// ──── Preferences: Language, Teacher, Voice ──────────────────
+
+export function getPreferredLanguage(): Language {
+  return loadProgress().preferredLanguage || 'en';
+}
+
+export function savePreferredLanguage(lang: Language): void {
+  const progress = loadProgress();
+  saveProgress({ ...progress, preferredLanguage: lang });
+}
+
+export function getTeacherPersona(): TeacherPersona {
+  return loadProgress().teacherPersona || 'female';
+}
+
+export function saveTeacherPersona(persona: TeacherPersona): void {
+  const progress = loadProgress();
+  saveProgress({ ...progress, teacherPersona: persona });
+}
+
+export function getSpeechRate(): number {
+  return loadProgress().speechRate || 1;
+}
+
+export function saveSpeechRate(rate: number): void {
+  const progress = loadProgress();
+  saveProgress({ ...progress, speechRate: Math.max(0.5, Math.min(2.0, rate)) });
+}
+
 // ──── Lesson Progress ────────────────────────────────────────
 
 export function markLessonStarted(lessonId: string, subjectId: string, grade: number): void {
   const progress = loadProgress();
   const exists = progress.lessonProgress.some((lp) => lp.lessonId === lessonId);
-  if (exists) {
-    saveProgress(updateStreak(progress));
-    return;
-  }
+  const updatedList = exists
+    ? progress.lessonProgress.map((lp) =>
+        lp.lessonId === lessonId ? { ...lp, lastStudiedAt: new Date().toISOString() } : lp
+      )
+    : [
+        ...progress.lessonProgress,
+        {
+          lessonId,
+          subjectId: subjectId as LessonProgress['subjectId'],
+          grade,
+          startedAt: new Date().toISOString(),
+          lastStudiedAt: new Date().toISOString(),
+        },
+      ];
+
   const updated: PersistedProgress = {
     ...updateStreak(progress),
-    lessonProgress: [
-      ...progress.lessonProgress,
-      {
-        lessonId,
-        subjectId: subjectId as LessonProgress['subjectId'],
-        grade,
-        startedAt: new Date().toISOString(),
-      },
-    ],
+    lessonProgress: updatedList,
   };
   saveProgress(updated);
 }
@@ -133,6 +189,7 @@ export function markLessonCompleted(lessonId: string): boolean {
   updatedLessons[idx] = {
     ...updatedLessons[idx],
     completedAt: new Date().toISOString(),
+    lastStudiedAt: new Date().toISOString(),
   };
   saveProgress({ ...updateStreak(progress), lessonProgress: updatedLessons });
   return true;
@@ -146,6 +203,46 @@ export function isLessonCompleted(lessonId: string): boolean {
   return loadProgress().lessonProgress.some(
     (lp) => lp.lessonId === lessonId && !!lp.completedAt
   );
+}
+
+// ──── Lesson Checkpoints ─────────────────────────────────────
+
+export function saveLessonCheckpoint(checkpoint: LessonCheckpoint): void {
+  const progress = loadProgress();
+  const checkpoints = { ...(progress.checkpoints || {}) };
+  checkpoints[checkpoint.lessonId] = {
+    ...checkpoint,
+    lastUpdatedAt: new Date().toISOString(),
+  };
+
+  const updatedLessons = progress.lessonProgress.map((lp) =>
+    lp.lessonId === checkpoint.lessonId
+      ? { ...lp, checkpoint, lastStudiedAt: new Date().toISOString() }
+      : lp
+  );
+
+  saveProgress({
+    ...updateStreak(progress),
+    checkpoints,
+    lessonProgress: updatedLessons,
+  });
+}
+
+export function getLessonCheckpoint(lessonId: string): LessonCheckpoint | undefined {
+  const progress = loadProgress();
+  if (progress.checkpoints?.[lessonId]) {
+    return progress.checkpoints[lessonId];
+  }
+  const lessonProg = progress.lessonProgress.find((lp) => lp.lessonId === lessonId);
+  return lessonProg?.checkpoint;
+}
+
+export function clearLessonCheckpoint(lessonId: string): void {
+  const progress = loadProgress();
+  if (!progress.checkpoints?.[lessonId]) return;
+  const checkpoints = { ...progress.checkpoints };
+  delete checkpoints[lessonId];
+  saveProgress({ ...progress, checkpoints });
 }
 
 // ──── Quiz Attempts ──────────────────────────────────────────
@@ -163,6 +260,39 @@ export function getQuizAttempts(quizId?: string): QuizAttempt[] {
   const progress = loadProgress();
   if (!quizId) return progress.quizAttempts;
   return progress.quizAttempts.filter((a) => a.quizId === quizId);
+}
+
+// ──── PDF / Documents ────────────────────────────────────────
+
+export function saveDocumentLearning(doc: DocumentLearningData): void {
+  const progress = loadProgress();
+  const existingIdx = progress.documents.findIndex((d) => d.id === doc.id);
+  const updatedDocs = [...progress.documents];
+  if (existingIdx >= 0) {
+    updatedDocs[existingIdx] = doc;
+  } else {
+    updatedDocs.unshift(doc);
+  }
+  saveProgress({
+    ...updateStreak(progress),
+    documents: updatedDocs.slice(0, 10), // keep last 10 documents
+  });
+}
+
+export function getDocuments(): DocumentLearningData[] {
+  return loadProgress().documents || [];
+}
+
+export function getDocumentById(id: string): DocumentLearningData | undefined {
+  return (loadProgress().documents || []).find((d) => d.id === id);
+}
+
+export function deleteDocument(id: string): void {
+  const progress = loadProgress();
+  saveProgress({
+    ...progress,
+    documents: (progress.documents || []).filter((d) => d.id !== id),
+  });
 }
 
 // ──── Student Name ───────────────────────────────────────────
@@ -187,13 +317,13 @@ export function getActivityLast7Days(): StudentActivity[] {
     const dateStr = d.toISOString().slice(0, 10);
 
     const lessonsStarted = progress.lessonProgress.filter(
-      (lp) => lp.startedAt.slice(0, 10) === dateStr
+      (lp) => (lp.startedAt || '').slice(0, 10) === dateStr
     ).length;
     const lessonsCompleted = progress.lessonProgress.filter(
-      (lp) => lp.completedAt?.slice(0, 10) === dateStr
+      (lp) => (lp.completedAt || '').slice(0, 10) === dateStr
     ).length;
     const attempts = progress.quizAttempts.filter(
-      (qa) => qa.completedAt.slice(0, 10) === dateStr
+      (qa) => (qa.completedAt || '').slice(0, 10) === dateStr
     );
     const quizAttempts = attempts.length;
     const correctAnswers = attempts.reduce((sum, a) => sum + a.score, 0);
@@ -280,7 +410,7 @@ export function getRecommendations(): Recommendation[] {
         lessonId: lesson.id,
         lessonTitle: lesson.title,
         subjectId: lesson.subjectId,
-        reason: 'You haven\'t tried this lesson yet — give it a go!',
+        reason: "You haven't tried this lesson yet — give it a go!",
         priority: 3,
       });
     }
@@ -297,6 +427,9 @@ export function resetProgress(): void {
   if (!storageAvailable()) return;
   try {
     localStorage.removeItem(STORAGE_KEY);
+    for (const legacyKey of LEGACY_KEYS) {
+      localStorage.removeItem(legacyKey);
+    }
   } catch {
     // ignore
   }

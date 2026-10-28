@@ -7,6 +7,10 @@ import {
   scoreQuizSession,
   isCorrect,
   getScoreLabel,
+  getQuestionText,
+  getOptionText,
+  getExplanationText,
+  buildCustomQuiz,
 } from '@/lib/quiz-engine';
 import { QUIZZES } from '@/lib/quizzes';
 import type { Quiz, Difficulty } from '@/lib/types';
@@ -157,6 +161,49 @@ describe('getScoreLabel', () => {
 
   it('returns different colors for different scores', () => {
     expect(getScoreLabel(100).color).not.toBe(getScoreLabel(0).color);
+  });
+
+  it('provides multilingual score labels for Hindi and Marathi', () => {
+    expect(getScoreLabel(100, 'hi').label).toBe('शानदार!');
+    expect(getScoreLabel(100, 'mr').label).toBe('उत्कृष्ट!');
+    expect(getScoreLabel(80, 'hi').label).toBe('बहुत बढ़िया!');
+    expect(getScoreLabel(60, 'mr').label).toBe('प्रयत्न चालू ठेवा!');
+  });
+});
+
+// ── Trilingual Question & Option Helpers ──────────────────────
+
+describe('Trilingual Question Helpers', () => {
+  it('retrieves Hindi and Marathi question text when available', () => {
+    const q = mathQuiz.questions.easy[0];
+    const enText = getQuestionText(q, 'en');
+    const hiText = getQuestionText(q, 'hi');
+    const mrText = getQuestionText(q, 'mr');
+
+    expect(enText).toBe(q.question);
+    expect(hiText).toBeTruthy();
+    expect(mrText).toBeTruthy();
+    expect(hiText).not.toBe(enText);
+  });
+
+  it('retrieves Hindi and Marathi option text', () => {
+    const opt = mathQuiz.questions.easy[0].options[0];
+    const enOpt = getOptionText(opt, 'en');
+    const hiOpt = getOptionText(opt, 'hi');
+    const mrOpt = getOptionText(opt, 'mr');
+
+    expect(enOpt).toBe(opt.text);
+    expect(hiOpt).toBeTruthy();
+    expect(mrOpt).toBeTruthy();
+
+    const q = mathQuiz.questions.easy[0];
+    expect(getExplanationText(q, true, 'hi')).toBeTruthy();
+  });
+
+  it('builds a custom quiz from ad-hoc question list', () => {
+    const custom = buildCustomQuiz('custom-1', 'My Document Quiz', [mathQuiz.questions.easy[0]]);
+    expect(custom.id).toBe('quiz-doc-custom-1');
+    expect(custom.questions.easy).toHaveLength(1);
   });
 });
 

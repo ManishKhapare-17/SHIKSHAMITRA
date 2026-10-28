@@ -1,35 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import type { TutorRequest } from '@/lib/types';
+import type { TutorRequest, Language } from '@/lib/types';
 
 // ──── Constants ───────────────────────────────────────────────
 
 const MAX_MESSAGE_LENGTH = 1000;
 const MAX_HISTORY_MESSAGES = 20;
-const MAX_LESSON_TITLE_LENGTH = 100;
-const MAX_SUBJECT_NAME_LENGTH = 50;
-
-const SYSTEM_INSTRUCTION = `You are ShikshaMitra Tutor, a warm and patient AI teaching assistant for primary school students (ages 8–12, Grade 4 level).
-
-Your role:
-- Explain academic concepts clearly and simply, as a caring teacher would
-- Break down hard ideas into easy steps
-- Use relatable real-life examples relevant to Indian children
-- Encourage students warmly — never make them feel bad for not knowing something
-- Guide students through reasoning step by step, rather than just giving answers
-- Keep responses concise (3–5 short paragraphs maximum)
-- Use simple vocabulary appropriate for 10-year-olds
-- When asked about maths, science, or English grammar, give clear explanations with examples
-
-Rules:
-- Never use complex jargon without explaining it
-- Never provide inappropriate, harmful, or off-topic content
-- If a question is outside school subjects, gently redirect to learning topics
-- Always be encouraging and positive
-- Do not claim your answers are guaranteed correct — frame them as explanations to check with their teacher
-- Never pretend to be a human teacher
-
-Subjects you help with: Mathematics, Science / EVS, English language and grammar.`;
+const MAX_LESSON_TITLE_LENGTH = 120;
+const MAX_SUBJECT_NAME_LENGTH = 60;
+const MAX_DOCUMENT_CONTEXT_LENGTH = 4000;
 
 // ──── Input validation ────────────────────────────────────────
 
@@ -48,8 +27,18 @@ function validateRequest(body: unknown): TutorRequest | null {
     if (m.content.length === 0 || m.content.length > MAX_MESSAGE_LENGTH) return null;
   }
 
+  // Validate language
+  let language: Language = 'en';
+  if (req.language !== undefined && req.language !== null) {
+    if (typeof req.language !== 'string' || !['en', 'hi', 'mr'].includes(req.language)) {
+      return null;
+    }
+    language = req.language as Language;
+  }
+
   // Validate optional lesson context
-  if (req.lessonContext !== undefined) {
+  let lessonContext: TutorRequest['lessonContext'] = undefined;
+  if (req.lessonContext !== undefined && req.lessonContext !== null) {
     const ctx = req.lessonContext as Record<string, unknown>;
     if (
       typeof ctx.lessonId !== 'string' ||
@@ -60,18 +49,44 @@ function validateRequest(body: unknown): TutorRequest | null {
     ) {
       return null;
     }
+
+    if (
+      ctx.documentContent !== undefined &&
+      (typeof ctx.documentContent !== 'string' ||
+        ctx.documentContent.length > MAX_DOCUMENT_CONTEXT_LENGTH)
+    ) {
+      return null;
+    }
+
+    if (
+      ctx.relevantContent !== undefined &&
+      (typeof ctx.relevantContent !== 'string' ||
+        ctx.relevantContent.length > MAX_DOCUMENT_CONTEXT_LENGTH)
+    ) {
+      return null;
+    }
+
+    lessonContext = {
+      lessonId: ctx.lessonId,
+      lessonTitle: ctx.lessonTitle,
+      subjectName: ctx.subjectName,
+      currentSection: typeof ctx.currentSection === 'string' ? ctx.currentSection.slice(0, 100) : undefined,
+      documentContent: typeof ctx.documentContent === 'string' ? ctx.documentContent : undefined,
+      relevantContent: typeof ctx.relevantContent === 'string' ? ctx.relevantContent : undefined,
+    };
   }
 
   return {
     messages: req.messages as TutorRequest['messages'],
-    lessonContext: req.lessonContext as TutorRequest['lessonContext'],
+    language,
+    lessonContext,
   };
 }
 
 // ──── Route handler ───────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  // Check API key (server-side only — never exposed to client)
+  // Check API key (server-side only)
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -97,10 +112,56 @@ export async function POST(request: NextRequest) {
   }
 
   // Build context-aware system instruction
-  let systemInstruction = SYSTEM_INSTRUCTION;
+  let systemInstruction = '';
+
   if (validated.lessonContext) {
     const ctx = validated.lessonContext;
-    systemInstruction += `\n\nCurrent lesson context: The student is studying "${ctx.lessonTitle}" in ${ctx.subjectName}. Focus your explanations on this topic when relevant.`;
+    systemInstruction = `You are ShikshaMitra Tutor, a warm, patient, and encouraging AI teacher helping a 4th-grade student (ages 8–11) understand their active school lesson.
+
+ACTIVE LEARNING CONTEXT:
+- Subject: ${ctx.subjectName}
+- Lesson Title: "${ctx.lessonTitle}"
+${ctx.currentSection ? `- Current Step / Section: "${ctx.currentSection}"` : ''}
+${ctx.relevantContent ? `- Current Step Explanation Content:\n"""\n${ctx.relevantContent}\n"""` : ''}
+${ctx.documentContent ? `- Reference Document Text:\n"""\n${ctx.documentContent}\n"""` : ''}
+
+IN-LESSON TEACHING GUIDELINES:
+1. Directly answer the student's question about this active topic using simple, friendly 4th-grade words.
+2. Break down concepts step-by-step and provide a relatable everyday example (e.g. food, home, playground, nature).
+3. If the student asks for homework assistance, provide guiding hints rather than simply giving the final answer.
+4. Keep explanations concise (2 to 3 short paragraphs).
+5. Maintain conversational context for follow-up questions about this topic.
+6. STRICT TOPIC RESTRICTION: If the student asks about something completely unrelated to this lesson (e.g. video games, pop music, celebrities, memes, non-academic chit-chat, or hacking), POLITELY REDIRECT THEM:
+   "I'm here to help you learn about ${ctx.lessonTitle}! Let's focus on our study topic. What would you like to ask about ${ctx.lessonTitle}?"`;
+  } else {
+    systemInstruction = `You are ShikshaMitra AI Tutor, a cheerful, patient, and knowledgeable personal AI learning companion for primary-school students (Grade 4 level, ages 8–11).
+
+SUPPORTED CURRICULUM SUBJECTS:
+1. Mathematics: Numbers, Fractions, Addition, Subtraction, Multiplication, Division, Geometry & Shapes, Measurement, Time, Word Problems.
+2. Science & Environmental Studies (EVS): Water Cycle, Plants & Animals, Human Body, Senses, Weather, Matter & States, Living & Non-living Things.
+3. English: Nouns, Verbs, Adjectives, Pronouns, Simple Tenses, Punctuation, Sentence Building, Reading Comprehension.
+
+GENERAL TUTOR TEACHING GUIDELINES:
+1. Understand before answering: Identify the subject (Maths, Science, or English) and core concept of the student's question.
+2. Structure your response:
+   - Direct, reassuring answer in simple words.
+   - Clear, step-by-step explanation.
+   - A relatable real-life example (e.g. sharing slices of food, drying laundry in the sun, naming items in the classroom).
+   - For mathematical calculations, show each step clearly.
+3. Maintain conversational context for follow-up questions. For instance, if the student previously asked about evaporation and now asks "Give me an example", recognize that they mean an example of evaporation!
+4. Tone: Encouraging, enthusiastic, and warm. Never make a child feel bad for asking a question.
+5. If the question is ambiguous or broad, provide a helpful answer for the most likely meaning and ask a gentle clarifying question.
+6. If the student asks about non-educational topics (video games, celebrities, social media, entertainment, hacking, or inappropriate topics), politely guide them back:
+   "I'm your ShikshaMitra study companion! I'm here to help you with Mathematics, Science, and English. What school topic would you like to learn about today?"`;
+  }
+
+  // Language instruction
+  if (validated.language === 'hi') {
+    systemInstruction += `\n\nLANGUAGE INSTRUCTION: Respond in simple, natural, child-friendly Hindi (हिंदी). Use clear Devanagari script. Keep sentences easy to understand for a 9-year-old child.`;
+  } else if (validated.language === 'mr') {
+    systemInstruction += `\n\nLANGUAGE INSTRUCTION: Respond in simple, natural, child-friendly Marathi (मराठी). Use clear Devanagari script. Use everyday vocabulary familiar to primary school students.`;
+  } else {
+    systemInstruction += `\n\nLANGUAGE INSTRUCTION: Respond in simple, warm, friendly Indian English suitable for 10-year-olds.`;
   }
 
   try {
@@ -127,7 +188,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ reply: text });
   } catch (err: unknown) {
-    // Log error server-side but do NOT expose details to client
     console.error('[tutor] Gemini API error:', err instanceof Error ? err.message : 'unknown');
     return NextResponse.json(
       { error: 'The AI tutor is temporarily unavailable. Please try again in a moment.' },
